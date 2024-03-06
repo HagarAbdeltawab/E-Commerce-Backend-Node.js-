@@ -72,3 +72,59 @@ export const createCheckOutSession = catchError(async(req,res,next)=>{
     })
     res.json({message:'success',session})
 })
+
+export const createOnlineOrder = catchError(async(req,res,next)=>{ (request, response) => {
+    const sig = request.headers['stripe-signature'];
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(request.body, sig, endpointSecret);
+    } catch (err) {
+        response.status(400).send(`Webhook Error: ${err.message}`);
+        return;
+    }
+    // Handle the event
+    switch (event.type) {
+        case 'checkout.session.completed':
+        card(event.data.object)
+        // Then define and call a function to handle the event checkout.session.completed
+        break;
+        // ... handle other event types
+        default:
+        console.log(`Unhandled event type ${event.type}`);
+    }
+    // Return a 200 response to acknowledge receipt of the event
+    response.send();}
+})
+
+async function card(e) {
+    let cart = await cartModel.findById(e.client_reference_id)
+    if(!cart) return next(new AppError('product not found',404))
+    let user = await userModel.findOne({email: e.email})
+    
+    let order = new orderModel({
+        user: user._id,
+        cartItems: cart.cartItems,
+        totalOrderPrice: e.amount_total / 100,
+        shippingAddress: e.metadata.shippingAddress,
+        paymentType: 'card',
+        isPaid: true,
+        paidAt:Date.now(),
+    })
+    await order.save()
+    
+    if(order){
+        let options = cart.cartItems.map((prod)=>{
+            return({
+                updateOne:{
+                    "filter": {"_id":prod.product},
+                    "update":{$inc:{sold:prod.quantity ,quantity:-prod.quantity}}
+                }
+            })
+        })
+        await productModel.bulkWrite(options)
+        // clear cart
+        await cartModel.findByIdAndDelete({user: user.id})
+        res.json({message:"success", order})
+    }
+    return next(new AppError('order not found', 404))
+}
